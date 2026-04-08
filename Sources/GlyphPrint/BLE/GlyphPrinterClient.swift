@@ -2,6 +2,20 @@ import Foundation
 import CoreBluetooth
 import OSLog
 
+extension CBManagerState {
+    var logDescription: String {
+        switch self {
+        case .unknown: return "unknown"
+        case .resetting: return "resetting"
+        case .unsupported: return "unsupported"
+        case .unauthorized: return "unauthorized"
+        case .poweredOff: return "poweredOff"
+        case .poweredOn: return "poweredOn"
+        @unknown default: return "unknown(\(rawValue))"
+        }
+    }
+}
+
 public protocol GlyphPrinterTransport: Sendable {
     func connect(timeout: Duration) async throws
     func disconnect()
@@ -31,11 +45,12 @@ public final class GlyphPrinterClient: NSObject, @unchecked Sendable, GlyphPrint
         self.central = CBCentralManager(delegate: self, queue: self.queue)
     }
 
-    public func connect(timeout: Duration = .seconds(15)) async throws {
+    public func connect(timeout: Duration = .seconds(30)) async throws {
         logger.debug("connect(timeout: \(timeout.components.seconds, privacy: .public)s) called")
         if let peripheral, peripheral.state == .connected, notifyReady, writeCharacteristic != nil {
             return
         }
+        
         logger.debug("Beginning BLE connect flow with timeout \(timeout.components.seconds, privacy: .public)s")
 
         try await withTimeout(timeout, operation: "BLE connect") {
@@ -43,7 +58,7 @@ public final class GlyphPrinterClient: NSObject, @unchecked Sendable, GlyphPrint
                 self.queue.async {
                     self.connectContinuation = continuation
                     self.logger.debug("Connect continuation set. Attempting to start scan if possible. Current central state: \(String(describing: self.central.state.rawValue), privacy: .public)")
-                    self.startScanIfPossible()
+                    self.scanStateUpdate()
                 }
             }
         }
@@ -92,8 +107,8 @@ public final class GlyphPrinterClient: NSObject, @unchecked Sendable, GlyphPrint
         }
     }
 
-    private func startScanIfPossible() {
-        logger.debug("startScanIfPossible() invoked. Central state: \(self.central.state.rawValue, privacy: .public)")
+    private func scanStateUpdate() {
+        logger.debug("Central state: \(self.central.state.logDescription, privacy: .public)")
         switch central.state {
         case .poweredOn:
             guard !isScanning else { return }
@@ -185,7 +200,7 @@ public final class GlyphPrinterClient: NSObject, @unchecked Sendable, GlyphPrint
 extension GlyphPrinterClient: CBCentralManagerDelegate {
     public func centralManagerDidUpdateState(_ central: CBCentralManager) {
         logger.debug("centralManagerDidUpdateState: \(central.state.rawValue, privacy: .public)")
-        startScanIfPossible()
+        scanStateUpdate()
     }
 
     public func centralManager(_ central: CBCentralManager,
