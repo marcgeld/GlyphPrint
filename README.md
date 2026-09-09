@@ -5,6 +5,65 @@ images, photographs, and text on small BLE thermal printers using the `0x5178`
 protocol. The Luxorparts PX10 has been exercised on real hardware; compatibility
 and print quality are not guaranteed across firmware variants.
 
+## Requirements
+
+- iOS 16 or later, or macOS 13 or later.
+- Swift 6.2 or later and an Xcode installation with a compatible Swift toolchain.
+- A Bluetooth-capable device and a supported BLE thermal printer for printing.
+
+## Add GlyphPrint to an Xcode app
+
+1. Open your iOS or macOS app project in Xcode.
+2. Choose **File → Add Package Dependencies**.
+3. Enter `https://github.com/marcgeld/GlyphPrint.git`.
+4. Choose **Up to Next Major Version**, starting from **1.0.0**, then click
+   **Add Package**.
+5. Select the **GlyphPrint** library product and add it to your app target.
+6. Configure the app's Bluetooth permissions as described below, then use
+   `import GlyphPrint` in your Swift code.
+
+For local development, choose **Add Local** in the package dependency dialog and
+select the folder containing GlyphPrint's `Package.swift`.
+
+## Bluetooth permissions in the consuming app
+
+**Bluetooth settings must be configured in the app that uses GlyphPrint.**
+The package cannot supply the app's privacy usage description or sandbox
+entitlements on its behalf.
+
+### iOS and macOS: usage description
+
+Add `NSBluetoothAlwaysUsageDescription` to your **app's** `Info.plist` with a
+user-facing explanation of why Bluetooth is needed:
+
+```xml
+<key>NSBluetoothAlwaysUsageDescription</key>
+<string>This app uses Bluetooth to connect to your printer.</string>
+```
+
+If Xcode generates your app's `Info.plist`, add **Privacy - Bluetooth Always Usage
+Description** under the app target's **Info** tab instead. Localize the description
+for your app's supported languages. For example, in Swedish:
+“Appen använder Bluetooth för att ansluta till din skrivare.”
+
+See Apple's documentation for
+[`NSBluetoothAlwaysUsageDescription`](https://developer.apple.com/documentation/bundleresources/information-property-list/nsbluetoothalwaysusagedescription).
+
+### macOS: App Sandbox
+
+For a macOS app with App Sandbox enabled, select the **app target**, open
+**Signing & Capabilities → App Sandbox**, and enable **Bluetooth** under
+**Hardware**. This adds the following entitlement to the app's entitlements file:
+
+```xml
+<key>com.apple.security.device.bluetooth</key>
+<true/>
+```
+
+This entitlement is required in addition to the usage description above for a
+sandboxed macOS app. See Apple's documentation for
+[`com.apple.security.device.bluetooth`](https://developer.apple.com/documentation/BundleResources/Entitlements/com.apple.security.device.bluetooth).
+
 ## Quick start
 
 ```swift
