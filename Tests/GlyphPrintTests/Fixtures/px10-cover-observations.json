@@ -1,0 +1,40 @@
+{
+  "provenance": "User-reported CLI status payloads for the same PX10 in report order. Unspecified conditions are null. Full notification frames were not provided; no framing or CRC bytes have been reconstructed.",
+  "deviceIdentifier": "C9AFD6A7-ABCF-9024-D3A3-F6B31659B5F6",
+  "observations": [
+    {
+      "cover": "closed",
+      "paperPresent": null,
+      "payloadHex": "000329",
+      "usbPowerConnected": null
+    },
+    {
+      "cover": "open",
+      "paperPresent": null,
+      "payloadHex": "001629",
+      "usbPowerConnected": null
+    },
+    {
+      "cover": "closed",
+      "paperPresent": false,
+      "usbPowerConnected": null,
+      "payloadHex": "001629"
+    },
+    {
+      "cover": "closed",
+      "paperPresent": true,
+      "usbPowerConnected": false,
+      "payloadHex": "000a28"
+    }
+  ],
+  "analysis": {
+    "mappingVerified": false,
+    "initialPairXorHex": "001500",
+    "notes": [
+      "The open-cover observation and the closed-cover/no-paper observation have identical payloads.",
+      "The closed-cover/paper-present/USB-disconnected observation differs in both byte 1 and byte 2 from the earlier closed-cover observation.",
+      "Earlier USB conditions and initial paper presence were not specified. No individual cover, paper, power, battery, or temperature flag is established."
+    ],
+    "nextExperiment": "Keep USB disconnected and the cover closed for each reading. Compare paper present, paper absent, then paper present again, with repeated readings under each condition."
+  }
+}

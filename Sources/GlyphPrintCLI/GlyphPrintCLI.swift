@@ -1,320 +1,105 @@
 import Foundation
 import GlyphPrint
 import ImageIO
-import CoreGraphics
-import CoreBluetooth
-import OSLog
-
-// Safe CLI logger (optional, used if needed for additional logs)
-extension Logger {
-    private static let cliSubsystem: String = {
-        if let id = Bundle.main.bundleIdentifier, !id.isEmpty {
-            return id
-        }
-        return "se.glyphprint.cli"
-    }()
-    static let glyphPrintCli = Logger(subsystem: cliSubsystem, category: "GlyphPrintCli")
-}
 
 @main
 struct GlyphPrintCLI {
     static func main() async {
-        let args = Array(CommandLine.arguments.dropFirst())
-
-        do {
-            if args.isEmpty {
-                let printer = GlyphPrinter()
-                print("No arguments — printing test QR code…")
-                try await connectAndPrint(printer: printer) {
-                    try await printer.printQRCode("GlyphPrint Test")
-                }
-            } else if args.first == "--scan" || args.first == "scan" {
-                let duration = scanDuration(from: args)
-                let filter = deviceFilter(from: args)
-                try await scanDevices(duration: duration, filter: filter)
-            } else if args.first == "--connect" || args.first == "connect" {
-                guard args.count >= 2 else {
-                    fputs("Error: --connect requires a device UUID or name substring\n", stderr)
-                    printUsage()
-                    exit(1)
-                }
-                try await connectToDevice(matching: args[1])
-            } else if args.first == "--image" {
-                guard args.count >= 2 else {
-                    fputs("Error: --image requires a file path\n", stderr)
-                    printUsage()
-                    exit(1)
-                }
-                let path = args[1]
-                let image = try loadImage(at: path)
-                let printer = GlyphPrinter()
-                print("Printing image \(path)…")
-                try await connectAndPrint(printer: printer) {
-                    try await printer.print(image: image)
-                }
-            } else if args.first == "--help" || args.first == "-h" {
-                printUsage()
-            } else {
-                let text = args.joined(separator: " ")
-                let printer = GlyphPrinter()
-                print("Printing QR code for \"\(text)\"…")
-                try await connectAndPrint(printer: printer) {
-                    try await printer.printQRCode(text)
-                }
-            }
-        } catch {
-            fputs("Error: \(error.localizedDescription)\n", stderr)
+        do { try await run(CLIOptions(Array(CommandLine.arguments.dropFirst()))) }
+        catch {
+            FileHandle.standardError.write(Data("Error: \(error.localizedDescription)\n".utf8))
             exit(1)
         }
     }
 
-    private static func scanDevices(duration: Duration, filter: DeviceFilter) async throws {
-        print("Scanning for BLE devices...")
-        let allDevices = try await BLEDeviceScanner().scan(duration: duration)
-        let devices = allDevices.filter { filter.includes($0) }
-
-        guard !devices.isEmpty else {
-            if filter.isEmpty {
-                print("No BLE devices found.")
-            } else {
-                print("No matching BLE devices found.")
+    static func run(_ options: CLIOptions) async throws {
+        let preferences = PrinterPreferences()
+        switch options.action {
+        case .help: printUsage(); return
+        case .showDefault:
+            if let saved = try preferences.load() { print("\(saved.name ?? "Printer") — \(saved.id)") }
+            else { print("No default printer saved.") }
+            return
+        case .clearDefault: try preferences.clear(); print("Default printer cleared."); return
+        case .setDefault(let target):
+            let devices = try await PrinterDiscovery.discoverPrinters(duration: .seconds(options.seconds), printersOnly: false)
+            let selected = try PrinterSelection.select(from: devices, matching: target)
+            let client = GlyphPrinterClient(config: selected.config)
+            do { try await client.connect(); await client.disconnect() }
+            catch { await client.disconnect(); throw error }
+            try preferences.save(.init(id: selected.id, name: selected.name))
+            print("Default saved: \(selected.name ?? "Printer") — \(selected.id)")
+            return
+        case .scan:
+            let devices = try await PrinterDiscovery.discoverPrinters(duration: .seconds(options.seconds), printersOnly: options.printersOnly, verify: options.verify)
+                .filter { device in options.name.map { device.name?.localizedCaseInsensitiveContains($0) == true } ?? true }
+            if devices.isEmpty { print("No matching devices found.") }
+            for device in devices {
+                print("\(device.name ?? "unknown") — \(device.id)")
+                print("  \(device.compatibility.rawValue); RSSI \(device.rssi == 127 ? "unavailable" : String(device.rssi)); advertised: \(device.advertisedServices.joined(separator: ", "))")
+                if device.hasWeakSignal { print("  Warning: weak signal; explicit selection is still allowed.") }
+                if let error = device.verificationError { print("  Verification: \(error)") }
             }
             return
+        default: break
         }
-
-        for (index, device) in devices.enumerated() {
-            let name = device.name ?? "unknown"
-            let services = device.serviceUUIDs.isEmpty ? "-" : device.serviceUUIDs.joined(separator: ",")
-            print("\(index + 1). \(name)")
-            print("   id: \(device.identifier.uuidString)")
-            print("   rssi: \(device.rssi)")
-            print("   services: \(services)")
-        }
-    }
-
-    private static func connectToDevice(matching target: String) async throws {
-        let config: PrinterConfig
-        if let identifier = UUID(uuidString: target) {
-            config = PrinterConfig(advertisedNameSubstring: nil, targetPeripheralIdentifier: identifier)
-            print("Connecting to \(identifier.uuidString)...")
-        } else {
-            config = PrinterConfig(advertisedNameSubstring: target, requiresNameMatch: true)
-            print("Connecting to device matching \"\(target)\"...")
-        }
-
-        let printer = GlyphPrinter(config: config)
-        try await printer.connect()
-        print("Connected.")
-        await printer.disconnect()
-        print("Disconnected.")
-    }
-
-    private static func connectAndPrint(printer: GlyphPrinter, _ work: @Sendable @escaping () async throws -> Void
-    ) async throws {
-        print("Connecting to printer…")
-        try await printer.connect()
+        let explicit: String?
+        if case .connect(let target) = options.action { explicit = target }
+        else { explicit = options.printer }
+        let target = try explicit ?? preferences.load()?.id.uuidString
+        let config = try await PrinterSelection.configuration(for: target, duration: .seconds(options.seconds))
+        let client = GlyphPrinterClient(config: config)
+        let rasterizer = MonochromeRasterizer(mode: options.dither ? .floydSteinberg : .threshold(160),
+            brightness: options.brightness, contrast: options.contrast)
+        let printer = GlyphPrinter(config: config, transport: client, rasterizer: rasterizer)
+        print("Connecting to \(config.targetPeripheralIdentifier?.uuidString ?? "printer")…")
         do {
-            try await work()
+            try await printer.connect()
+            switch options.action {
+            case .connect: print("Connected; write and notify channels verified.")
+            case .status:
+                let status = try await client.queryStatus()
+                print("Device state (raw; flags not yet mapped): \(hex(status.payload))")
+            case .image(let path):
+                guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+                      let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                        kCGImageSourceCreateThumbnailFromImageAlways: true,
+                        kCGImageSourceCreateThumbnailWithTransform: true,
+                        kCGImageSourceThumbnailMaxPixelSize: 4096
+                      ] as CFDictionary) else { throw GlyphPrintError.invalidImage }
+                print("Result: \(try await printer.print(image: image).rawValue)")
+            case .printQR:
+                let text = options.text.isEmpty ? "GlyphPrint Test" : options.text.joined(separator: " ")
+                print("Result: \(try await printer.printQRCode(text).rawValue)")
+            default: break
+            }
+            if let path = options.trace {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                try encoder.encode(await client.notifications()).write(to: URL(fileURLWithPath: path), options: .atomic)
+                print("Notification trace saved: \(path)")
+            }
+            await printer.disconnect()
         } catch {
             await printer.disconnect()
             throw error
         }
-        await printer.disconnect()
-        print("Done.")
     }
 
-    private static func scanDuration(from args: [String]) -> Duration {
-        guard let secondsIndex = args.firstIndex(of: "--seconds"),
-              args.indices.contains(secondsIndex + 1),
-              let seconds = Double(args[secondsIndex + 1]) else {
-            return .seconds(5)
-        }
-        return .milliseconds(Int(seconds * 1000))
-    }
-
-    private static func deviceFilter(from args: [String]) -> DeviceFilter {
-        DeviceFilter(
-            printerConfig: args.contains("--printers") || args.contains("--printer") ? .default : nil,
-            nameSubstring: value(after: "--name", in: args)
-        )
-    }
-
-    private static func value(after option: String, in args: [String]) -> String? {
-        guard let index = args.firstIndex(of: option),
-              args.indices.contains(index + 1) else {
-            return nil
-        }
-        return args[index + 1]
-    }
-
-    private static func loadImage(at path: String) throws -> CGImage {
-        let url = URL(fileURLWithPath: path)
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
-            throw GlyphPrintError.invalidImage
-        }
-        return image
-    }
-
-    private static func printUsage() {
+    static func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
+    static func printUsage() {
         print("""
-        Usage: gprint [options] [text]
-
-        Options:
-          (no arguments)        Print a test QR code
-          <text>                Print text as a QR code
-          --scan                Scan nearby BLE devices
-          --scan --seconds <n>  Scan for n seconds
-          --scan --printers     Show likely BLE printers only
-          --scan --name <text>  Show devices whose name contains text
-          --connect <id|name>   Connect to a BLE printer by UUID or name substring
-          --image <path>        Print an image file (PNG, JPEG, etc.)
-          --help, -h            Show this help message
+        Usage: gprint [--printer UUID|name] [text]
+          --scan [--printers] [--name text] [--verify] [--seconds 1...60]
+          --connect UUID|name           Verify transport without printing
+          --status [--printer target]   Read raw device status
+          --set-default UUID|name       Verify and save a default printer
+          --show-default | --clear-default
+          --image path [--dither] [--brightness -1...1] [--contrast 0...4]
+          --trace path.json             Save received notifications
+          --                            Treat remaining arguments as QR text
+        Printer selection: --printer, saved UUID, then unambiguous discovery.
+        Verified means GATT transport verified, not verified print quality.
         """)
-    }
-}
-
-private struct BLEDevice: Sendable {
-    let identifier: UUID
-    let name: String?
-    let rssi: Int
-    let serviceUUIDs: [String]
-}
-
-private struct DeviceFilter: Equatable {
-    let printerConfig: PrinterConfig?
-    let nameSubstring: String?
-
-    func includes(_ device: BLEDevice) -> Bool {
-        if let printerConfig, !device.matchesPrinter(config: printerConfig) {
-            return false
-        }
-
-        if let nameSubstring, !nameSubstring.isEmpty {
-            return device.name?.localizedCaseInsensitiveContains(nameSubstring) == true
-        }
-
-        return true
-    }
-
-    var isEmpty: Bool {
-        printerConfig == nil && (nameSubstring?.isEmpty ?? true)
-    }
-}
-
-private extension BLEDevice {
-    func matchesPrinter(config: PrinterConfig) -> Bool {
-        let serviceMatches = serviceUUIDs.contains { $0.caseInsensitiveCompare(config.serviceUUID) == .orderedSame }
-        let nameMatches: Bool
-        if let advertisedNameSubstring = config.advertisedNameSubstring, !advertisedNameSubstring.isEmpty {
-            nameMatches = name?.localizedCaseInsensitiveContains(advertisedNameSubstring) == true
-        } else {
-            nameMatches = false
-        }
-        return serviceMatches || nameMatches
-    }
-}
-
-private final class BLEDeviceScanner: NSObject, CBCentralManagerDelegate, @unchecked Sendable {
-    private let queue = DispatchQueue(label: "GlyphPrint.CLI.BLEScanner")
-
-    private var central: CBCentralManager!
-    private var devices: [UUID: BLEDevice] = [:]
-    private var continuation: CheckedContinuation<[BLEDevice], Error>?
-    private var isScanning = false
-
-    override init() {
-        super.init()
-        central = CBCentralManager(delegate: self, queue: queue)
-    }
-
-    func scan(duration: Duration) async throws -> [BLEDevice] {
-        try await withCheckedThrowingContinuation { continuation in
-            queue.async {
-                guard self.continuation == nil else {
-                    continuation.resume(
-                        throwing: GlyphPrintError.connectionFailed("A scan operation is already in progress.")
-                    )
-                    return
-                }
-
-                self.devices.removeAll()
-                self.continuation = continuation
-                self.startScanIfPossible()
-
-                self.queue.asyncAfter(deadline: .now() + duration.timeInterval) {
-                    self.finishScan()
-                }
-            }
-        }
-    }
-
-    func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        startScanIfPossible()
-    }
-
-    func centralManager(
-        _ central: CBCentralManager,
-        didDiscover peripheral: CBPeripheral,
-        advertisementData: [String : Any],
-        rssi RSSI: NSNumber
-    ) {
-        let serviceUUIDs = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID]) ?? []
-        let localName = advertisementData[CBAdvertisementDataLocalNameKey] as? String
-        let name = peripheral.name ?? localName
-        devices[peripheral.identifier] = BLEDevice(
-            identifier: peripheral.identifier,
-            name: name,
-            rssi: RSSI.intValue,
-            serviceUUIDs: serviceUUIDs.map(\.uuidString).sorted()
-        )
-    }
-
-    private func startScanIfPossible() {
-        guard continuation != nil, !isScanning else { return }
-
-        switch central.state {
-        case .poweredOn:
-            isScanning = true
-            central.scanForPeripherals(
-                withServices: nil,
-                options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
-            )
-        case .unsupported, .unauthorized, .poweredOff:
-            finishScan(throwing: GlyphPrintError.bluetoothUnavailable)
-        case .unknown, .resetting:
-            return
-        @unknown default:
-            finishScan(throwing: GlyphPrintError.bluetoothUnavailable)
-        }
-    }
-
-    private func finishScan(throwing error: Error? = nil) {
-        if isScanning {
-            central.stopScan()
-            isScanning = false
-        }
-
-        guard let continuation else { return }
-        self.continuation = nil
-
-        if let error {
-            continuation.resume(throwing: error)
-        } else {
-            let sorted = devices.values.sorted { first, second in
-                if first.rssi == second.rssi {
-                    return first.identifier.uuidString < second.identifier.uuidString
-                }
-                return first.rssi > second.rssi
-            }
-            continuation.resume(returning: sorted)
-        }
-    }
-}
-
-private extension Duration {
-    var timeInterval: TimeInterval {
-        let components = self.components
-        return TimeInterval(components.seconds) + TimeInterval(components.attoseconds) / 1_000_000_000_000_000_000
     }
 }

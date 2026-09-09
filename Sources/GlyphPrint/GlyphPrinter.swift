@@ -14,7 +14,7 @@ public final class GlyphPrinter: Sendable {
         qrGenerator: QRGenerator = QRGenerator(),
         rasterizer: MonochromeRasterizer? = nil
     ) {
-        self.transport = transport ?? GlyphPrinterClient(config: config)
+        self.transport = transport ?? SelectingPrinterTransport(config: config)
         self.qrGenerator = qrGenerator
         self.rasterizer = rasterizer ?? MonochromeRasterizer(targetWidth: config.imageWidth)
     }
@@ -28,20 +28,23 @@ public final class GlyphPrinter: Sendable {
         await transport.disconnect()
     }
 
-    public func printQRCode(_ string: String) async throws {
+    @discardableResult
+    public func printQRCode(_ string: String) async throws -> PrintResult {
         let image = try qrGenerator.makeQRCode(from: string, targetWidth: rasterizer.targetWidth)
-        try await print(image: image)
+        return try await print(image: image)
     }
 
-    public func print(image: CGImage) async throws {
+    @discardableResult
+    public func print(image: CGImage) async throws -> PrintResult {
         let raster = try rasterizer.rasterize(image)
-        try await print(raster: raster)
+        return try await print(raster: raster)
     }
 
     /// Sends pre-rasterized content without scaling or dithering it again.
-    public func print(raster: RasterImage) async throws {
+    @discardableResult
+    public func print(raster: RasterImage) async throws -> PrintResult {
         let packets = try GlyphProtocol.buildPrintJob(from: raster)
-        try await jobs.send(packets, using: transport)
+        return try await jobs.send(packets, using: transport)
     }
 
     public func makePacketsForQRCode(_ string: String) throws -> [Data] {

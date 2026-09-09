@@ -27,6 +27,7 @@ final class BLEOperation: @unchecked Sendable {
 
     func wait(
         timeout: Duration? = nil,
+        operationName: String = "BLE connect",
         start: @Sendable () -> Void,
         cancel: @escaping @Sendable () -> Void
     ) async throws {
@@ -34,7 +35,7 @@ final class BLEOperation: @unchecked Sendable {
             Task {
                 do {
                     try await Task.sleep(for: duration)
-                    finish(.failure(GlyphPrintError.timedOut("BLE connect")), beforeResume: cancel)
+                    finish(.failure(GlyphPrintError.timedOut(operationName)), beforeResume: cancel)
                 } catch { /* Timer cancelled after completion. */ }
             }
         }

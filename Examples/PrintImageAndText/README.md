@@ -4,11 +4,11 @@ Run from the project root on macOS:
 
 ```sh
 swift run photo-example --preview /tmp/glyphprint-photo.png
-swift run photo-example
+swift run photo-example --printer Luxorp.PX10
 ```
 
 The first command creates a PNG containing the exact monochrome pixels to be
-printed, without connecting to Bluetooth. The second prints on `Luxorp.PX10-1673`.
+printed, without connecting to Bluetooth. The second selects a printer whose name contains `Luxorp.PX10`.
 The JPEG is bundled as a Swift Package resource, so the compiled example works
 regardless of the current working directory.
 
@@ -30,3 +30,17 @@ on [Unsplash](https://unsplash.com/photos/a-box-with-a-key-chain-and-a-key-chain
 
 Physical sharpness and darkness also depend on the printer's heat settings,
 paper, and firmware.
+
+## Printer and tone settings
+
+Without `--printer`, the example uses the saved default UUID, or discovers a
+single matching printer. Multiple matches require an explicit UUID.
+
+```sh
+swift run photo-example --preview /tmp/brighter-photo.png --brightness 0.12 --contrast 1.1
+swift run photo-example --printer Luxorp.PX10 --brightness 0.12 --contrast 1.1
+```
+
+Brightness is −1...1 (default 0); contrast is 0...4 (default 1). These affect only
+the photo. Preview mode never accesses Bluetooth or printer preferences.
+The printed result is reported by the library; no fixed sleep is needed here.

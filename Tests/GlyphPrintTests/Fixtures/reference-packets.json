@@ -1,0 +1,9 @@
+{
+  "provenance": "Protocol reference vectors from rbaron/catprinter catprinter/cmds.py and ble.py. These are reference vectors, not captured PX10 responses.",
+  "source": "https://github.com/rbaron/catprinter",
+  "readyHex": "5178ae0101000000ff",
+  "pauseHex": "5178ae0101001070ff",
+  "leftmostBlackPixelHex": "5178a20001000107ff",
+  "latticeStartHex": "5178a6000b00aa551738445f5f5f44382ca1ff",
+  "latticeEndHex": "5178a6000b00aa5517000000000000001711ff"
+}

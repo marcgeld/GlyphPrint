@@ -1,0 +1,10 @@
+{
+  "provenance": "Captured from Luxorp.PX10-1673 on macOS on 2026-09-09. No print data was sent during this query. Status bit meanings have not been established.",
+  "advertisedServices": ["AF30"],
+  "discoveredServices": ["AE30", "AE3A"],
+  "writeCharacteristic": "AE01",
+  "notifyCharacteristic": "AE02",
+  "queryHex": "5178a30001000000ff",
+  "notificationHex": "5178a3010300000a2777ff",
+  "payloadHex": "000a27"
+}

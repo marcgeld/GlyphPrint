@@ -8,13 +8,14 @@ Run from the project root on macOS with Swift 6.2 or later:
 
 ```sh
 swift run qr-example
-swift run qr-example "https://example.com"
+swift run qr-example --printer Luxorp.PX10 "https://example.com"
 ```
 
 Without arguments, the QR code contains the text `GlyphPrint Test`.
 Turn on the printer and enable Bluetooth. Allow Bluetooth access if macOS prompts
-you. The example selects `Luxorp.PX10-1673`; change `advertisedNameSubstring` in
-the Swift file if you are using a different printer.
+you. Both examples use `--printer UUID|name`, then the saved default from
+`gprint --set-default`, then unambiguous discovery. No printer name is hardcoded.
+Multiple matches require an explicit UUID.
 
 To build the example without printing:
 
@@ -31,3 +32,6 @@ with dithering and a photo credit using a configurable font:
 swift run photo-example --preview /tmp/glyphprint-photo.png
 swift run photo-example
 ```
+
+Both examples report `submittedToBluetooth` or `printerReportedReady`; neither
+result proves physical print quality. Readiness waiting is handled by the library.

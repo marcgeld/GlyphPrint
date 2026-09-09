@@ -16,9 +16,30 @@ struct PrintImageAndTextExample {
 
     static func run() async throws {
         let args = Array(CommandLine.arguments.dropFirst())
-        guard args.isEmpty || (args.count == 2 && args[0] == "--preview") else {
-            print("Usage: photo-example [--preview output.png]")
-            exit(1)
+        var target: String?
+        var preview: String?
+        var brightness: Float = 0
+        var contrast: Float = 1
+        var index = 0
+        while index < args.count {
+            guard index + 1 < args.count else { throw GlyphPrintError.invalidArgument("Missing option value.") }
+            let value = args[index + 1]
+            switch args[index] {
+            case "--printer": target = value
+            case "--preview": preview = value
+            case "--brightness":
+                guard let number = Float(value), number.isFinite, (-1...1).contains(number) else {
+                    throw GlyphPrintError.invalidArgument("Brightness must be -1...1.")
+                }
+                brightness = number
+            case "--contrast":
+                guard let number = Float(value), number.isFinite, (0...4).contains(number) else {
+                    throw GlyphPrintError.invalidArgument("Contrast must be 0...4.")
+                }
+                contrast = number
+            default: throw GlyphPrintError.invalidArgument("Unknown option: \(args[index])")
+            }
+            index += 2
         }
         guard let url = Bundle.module.url(
             forResource: "markus-winkler-Z8yWSsx8OWE-unsplash", withExtension: "jpg"),
@@ -29,27 +50,26 @@ struct PrintImageAndTextExample {
                 kCGImageSourceThumbnailMaxPixelSize: 768
               ] as CFDictionary) else { throw GlyphPrintError.invalidImage }
 
-        let photo = try MonochromeRasterizer(mode: .floydSteinberg).rasterize(image)
+        let photo = try MonochromeRasterizer(mode: .floydSteinberg, brightness: brightness, contrast: contrast).rasterize(image)
         let creditImage = try TextRenderer(fontName: "Helvetica", fontSize: 22).render(
             "Photo by Markus Winkler\non Unsplash", alignment: .center)
         let credit = try MonochromeRasterizer().rasterize(creditImage)
         let page = try RasterImage.stacking([photo, credit], spacing: 12)
 
-        if !args.isEmpty {
-            try savePreview(page, to: URL(fileURLWithPath: args[1]))
-            print("Preview saved: \(args[1]) (\(page.width) × \(page.height) dots)")
+        if let preview {
+            try savePreview(page, to: URL(fileURLWithPath: preview))
+            print("Preview saved: \(preview) (\(page.width) × \(page.height) dots)")
             return
         }
 
-        let printer = GlyphPrinter(config: PrinterConfig(
-            advertisedNameSubstring: "Luxorp.PX10-1673", requiresNameMatch: true))
+        let selected = try target ?? PrinterPreferences().load()?.id.uuidString
+        let config = try await PrinterSelection.configuration(for: selected)
+        let printer = GlyphPrinter(config: config)
         do {
             try await printer.connect(timeout: .seconds(20))
-            try await printer.print(raster: page)
-            // Allow Bluetooth to drain; this is not a printer acknowledgement.
-            try await Task.sleep(for: .seconds(3))
+            let result = try await printer.print(raster: page)
             await printer.disconnect()
-            print("The photo and credit have been sent to the printer.")
+            print("Result: \(result.rawValue)")
         } catch {
             await printer.disconnect()
             throw error

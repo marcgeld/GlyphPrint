@@ -11,12 +11,16 @@ public struct MonochromeRasterizer: Sendable {
 
     public let targetWidth: Int
     public let mode: Mode
+    public let brightness: Float
+    public let contrast: Float
 
     private let logger = Logger.glyphPrintImage
 
-    public init(targetWidth: Int = 384, mode: Mode = .threshold(160)) {
+    public init(targetWidth: Int = 384, mode: Mode = .threshold(160), brightness: Float = 0, contrast: Float = 1) {
         self.targetWidth = targetWidth
         self.mode = mode
+        self.brightness = brightness
+        self.contrast = contrast
     }
 
     public func rasterize(_ image: CGImage) throws -> RasterImage {
@@ -24,6 +28,9 @@ public struct MonochromeRasterizer: Sendable {
             throw GlyphPrintError.unsupportedImageWidth(targetWidth)
         }
 
+        guard brightness.isFinite, (-1...1).contains(brightness), contrast.isFinite, (0...4).contains(contrast) else {
+            throw GlyphPrintError.invalidArgument("Brightness must be -1...1 and contrast 0...4.")
+        }
         let resized = try resize(image, targetWidth: targetWidth)
         let pixels = try rgbaPixels(from: resized)
         let width = resized.width
@@ -118,7 +125,7 @@ public struct MonochromeRasterizer: Sendable {
             let red = Float(pixels[index]) * 0.299
             let green = Float(pixels[index + 1]) * 0.587
             let blue = Float(pixels[index + 2]) * 0.114
-            return red + green + blue
+            return Self.adjust(red + green + blue, brightness: brightness, contrast: contrast)
         }
         switch mode {
         case .threshold(let threshold):
@@ -126,6 +133,10 @@ public struct MonochromeRasterizer: Sendable {
         case .floydSteinberg:
             return Self.dither(luminance, width: width, height: height)
         }
+    }
+
+    static func adjust(_ luminance: Float, brightness: Float, contrast: Float) -> Float {
+        min(255, max(0, (luminance - 127.5) * contrast + 127.5 + brightness * 255))
     }
 
     static func dither(_ luminance: [Float], width: Int, height: Int) -> [UInt8] {

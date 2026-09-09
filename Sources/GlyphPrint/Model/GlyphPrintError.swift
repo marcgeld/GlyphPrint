@@ -1,6 +1,8 @@
 import Foundation
 
 public enum GlyphPrintError: Error, LocalizedError, Sendable {
+    case invalidArgument(String)
+    case ambiguousPrinters([UUID])
     case bluetoothUnavailable
     case timedOut(String)
     case peripheralNotFound
@@ -14,6 +16,8 @@ public enum GlyphPrintError: Error, LocalizedError, Sendable {
 
     public var errorDescription: String? {
         switch self {
+        case .invalidArgument(let message): return message
+        case .ambiguousPrinters(let ids): return "Multiple printers match. Select a UUID: " + ids.map(\.uuidString).joined(separator: ", ")
         case .bluetoothUnavailable:
             return "Bluetooth is unavailable."
         case .timedOut(let operation):

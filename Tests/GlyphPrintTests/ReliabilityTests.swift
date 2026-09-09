@@ -24,7 +24,7 @@ import CoreGraphics
     try await started.wait(start: {}, cancel: {})
     task.cancel()
     do {
-        try await task.value
+        _ = try await task.value
         Issue.record("Expected cancellation")
     } catch is CancellationError {}
     #expect(operation.isFinished)
@@ -43,7 +43,7 @@ import CoreGraphics
         try await BLEOperation().wait(start: { Issue.record("Cancelled operation started") }, cancel: {})
     }
     do {
-        try await task.value
+        _ = try await task.value
         Issue.record("Expected cancellation")
     } catch is CancellationError {}
 }
@@ -122,7 +122,7 @@ import CoreGraphics
     try await started.wait(start: {}, cancel: {})
     task.cancel()
     do {
-        try await task.value
+        _ = try await task.value
         Issue.record("Expected cancellation")
     } catch is CancellationError {}
     try await queue.send([Data([3])], using: transport)
@@ -140,12 +140,12 @@ import CoreGraphics
     try await Task.sleep(for: .milliseconds(20))
     waiting.cancel()
     do {
-        try await waiting.value
+        _ = try await waiting.value
         Issue.record("Expected queued cancellation")
     } catch is CancellationError {}
     #expect(await transport.snapshot() == [Data([1])])
     active.cancel()
-    do { try await active.value } catch is CancellationError {}
+    do { _ = try await active.value } catch is CancellationError {}
     try await queue.send([Data([3])], using: transport)
     #expect(await transport.snapshot() == [Data([1]), Data([3])])
 }

@@ -9,9 +9,10 @@ actor PrintJobQueue {
     private var busy = false
     private var waiters: [Waiter] = []
 
-    func send(_ packets: [Data], using transport: any GlyphPrinterTransport) async throws {
+    @discardableResult
+    func send(_ packets: [Data], using transport: any GlyphPrinterTransport) async throws -> PrintResult {
         let id = UUID()
-        try await withTaskCancellationHandler {
+        return try await withTaskCancellationHandler {
             try Task.checkCancellation()
             if busy {
                 try await withCheckedThrowingContinuation { continuation in
@@ -25,6 +26,7 @@ actor PrintJobQueue {
                 try Task.checkCancellation()
                 try await transport.send(packet)
             }
+            return try await transport.finishJob()
         } onCancel: {
             Task { await self.cancelWaiter(id) }
         }

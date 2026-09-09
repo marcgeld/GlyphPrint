@@ -1,0 +1,14 @@
+[
+  {
+    "command" : 168,
+    "kind" : "unknown",
+    "payload" : "vwADMy4wLjUxAA==",
+    "raw" : "UXioAQoAvwADMy4wLjUxAFn\/"
+  },
+  {
+    "command" : 163,
+    "kind" : "deviceState",
+    "payload" : "AAon",
+    "raw" : "UXijAQMAAAond\/8="
+  }
+]

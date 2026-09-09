@@ -4,23 +4,25 @@ import GlyphPrint
 @main
 struct PrintQRCodeExample {
     static func main() async {
-        let text = CommandLine.arguments.dropFirst().joined(separator: " ")
-        let printer = GlyphPrinter(config: PrinterConfig(
-            advertisedNameSubstring: "Luxorp.PX10-1673",
-            requiresNameMatch: true
-        ))
-
+        var printer: GlyphPrinter?
         do {
-            try await printer.connect(timeout: .seconds(20))
-            try await printer.printQRCode(text.isEmpty ? "GlyphPrint Test" : text)
-
-            // Give Bluetooth time to transmit before disconnecting.
-            // This delay is not an acknowledgement from the printer.
-            try await Task.sleep(for: .seconds(3))
-            await printer.disconnect()
-            print("The QR code has been sent to the printer.")
+            var args = Array(CommandLine.arguments.dropFirst())
+            var target = try PrinterPreferences().load()?.id.uuidString
+            if let index = args.firstIndex(of: "--printer") {
+                guard index + 1 < args.count else { throw GlyphPrintError.invalidArgument("--printer requires a UUID or name.") }
+                target = args[index + 1]
+                args.removeSubrange(index...index + 1)
+            }
+            let config = try await PrinterSelection.configuration(for: target)
+            let connectedPrinter = GlyphPrinter(config: config)
+            printer = connectedPrinter
+            let text = args.joined(separator: " ")
+            try await connectedPrinter.connect(timeout: .seconds(20))
+            let result = try await connectedPrinter.printQRCode(text.isEmpty ? "GlyphPrint Test" : text)
+            await connectedPrinter.disconnect()
+            print("Result: \(result.rawValue)")
         } catch {
-            await printer.disconnect()
+            await printer?.disconnect()
             FileHandle.standardError.write(Data("Printing failed: \(error.localizedDescription)\n".utf8))
             exit(1)
         }

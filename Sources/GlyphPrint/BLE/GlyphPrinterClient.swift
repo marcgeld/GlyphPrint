@@ -20,6 +20,11 @@ public protocol GlyphPrinterTransport: Sendable {
     func connect(timeout: Duration) async throws
     func disconnect() async
     func send(_ data: Data) async throws
+    func finishJob() async throws -> PrintResult
+}
+
+extension GlyphPrinterTransport {
+    public func finishJob() async throws -> PrintResult { .submittedToBluetooth }
 }
 
 public actor GlyphPrinterClient: GlyphPrinterTransport {
@@ -40,6 +45,12 @@ public actor GlyphPrinterClient: GlyphPrinterTransport {
     public func send(_ data: Data) async throws {
         try await coordinator.send(data)
     }
+    public func finishJob() async throws -> PrintResult { try await coordinator.finishJob() }
+    public func queryStatus(timeout: Duration = .seconds(3)) async throws -> PrinterNotification {
+        try await coordinator.queryStatus(timeout: timeout)
+    }
+    public func notifications() async -> [PrinterNotification] { await coordinator.notifications() }
+
 }
 
 private final class GlyphPrinterBLECoordinator: NSObject, @unchecked Sendable {
@@ -57,6 +68,20 @@ private final class GlyphPrinterBLECoordinator: NSObject, @unchecked Sendable {
     private var sendContinuation: BLEOperation?
 
     private var pendingChunks: [Data] = []
+    private var attempted: Set<UUID> = []
+    private var candidateToken = UUID()
+    private var connectionToken = UUID()
+    private var writeScheduled = false
+    private var receivingPaused = false
+    private var decoder = PrinterNotificationDecoder()
+    private var received: [PrinterNotification] = []
+    private var notificationSequence = 0
+    private var lastWriteSequence = 0
+    private var readySequence = -1
+    private var statusOperation: BLEOperation?
+    private var completionOperation: BLEOperation?
+    private var lastStatus: PrinterNotification?
+
     private var notifyReady = false
     private var isScanning = false
     private var userInitiatedDisconnect = false
@@ -69,6 +94,11 @@ private final class GlyphPrinterBLECoordinator: NSObject, @unchecked Sendable {
     }
 
     func connect(timeout: Duration = .seconds(30)) async throws {
+        guard timeout > .zero, self.config.candidateTimeout > .zero,
+              self.config.sendTimeout > .zero, self.config.writeInterval >= .zero,
+              self.config.writeInterval <= .seconds(1) else {
+            throw GlyphPrintError.invalidArgument("Timeouts must be positive and writeInterval must be between 0 and 1 second.")
+        }
         let operation = BLEOperation()
         try await operation.wait(timeout: timeout) {
             self.queue.async {
@@ -82,6 +112,7 @@ private final class GlyphPrinterBLECoordinator: NSObject, @unchecked Sendable {
                     return
                 }
                 self.userInitiatedDisconnect = false
+                self.attempted.removeAll()
                 self.connectContinuation = operation
                 self.startScanIfPossible()
             }
@@ -114,7 +145,7 @@ private final class GlyphPrinterBLECoordinator: NSObject, @unchecked Sendable {
 
     func send(_ data: Data) async throws {
         let operation = BLEOperation()
-        try await operation.wait {
+        try await operation.wait(timeout: config.sendTimeout, operationName: "BLE send") {
             self.queue.async {
                 guard !operation.isFinished else { return }
                 guard self.notifyReady else {
@@ -162,6 +193,68 @@ private final class GlyphPrinterBLECoordinator: NSObject, @unchecked Sendable {
                 }
                 self.clearConnectionState()
             }
+        }
+    }
+
+    func notifications() async -> [PrinterNotification] {
+        await withCheckedContinuation { continuation in queue.async { continuation.resume(returning: self.received) } }
+    }
+
+    func queryStatus(timeout: Duration) async throws -> PrinterNotification {
+        let operation = BLEOperation()
+        try await operation.wait(timeout: timeout, operationName: "printer status") {
+            self.queue.async {
+                guard !operation.isFinished else { return }
+                guard self.statusOperation == nil else {
+                    operation.finish(.failure(GlyphPrintError.sendFailed("A status query is already in progress.")))
+                    return
+                }
+                self.statusOperation = operation
+                Task {
+                    do { try await self.send(GlyphPacketBuilder.makePacket(command: 0xA3, payload: Data([0]))) }
+                    catch {
+                        self.queue.async {
+                            guard self.statusOperation === operation else { return }
+                            operation.finish(.failure(error))
+                            self.statusOperation = nil
+                        }
+                    }
+                }
+            }
+        } cancel: {
+            self.queue.async { if self.statusOperation === operation { self.statusOperation = nil } }
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            queue.async {
+                if let status = self.lastStatus { continuation.resume(returning: status) }
+                else { continuation.resume(throwing: GlyphPrintError.internalInconsistency("Missing status response.")) }
+            }
+        }
+    }
+
+    func finishJob() async throws -> PrintResult {
+        let operation = BLEOperation()
+        do {
+            try await operation.wait(timeout: .seconds(3), operationName: "printer readiness") {
+                self.queue.async {
+                    guard !operation.isFinished else { return }
+                    guard self.notifyReady else {
+                        operation.finish(.failure(GlyphPrintError.connectionFailed("Disconnected.")))
+                        return
+                    }
+                    if self.readySequence > self.lastWriteSequence { operation.finish(.success(())); return }
+                    guard self.completionOperation == nil else {
+                        operation.finish(.failure(GlyphPrintError.sendFailed("Already waiting for readiness.")))
+                        return
+                    }
+                    self.completionOperation = operation
+                }
+            } cancel: {
+                self.queue.async { if self.completionOperation === operation { self.completionOperation = nil } }
+            }
+            return .printerReportedReady
+        } catch GlyphPrintError.timedOut {
+            return .submittedToBluetooth
         }
     }
 
@@ -229,6 +322,16 @@ private final class GlyphPrinterBLECoordinator: NSObject, @unchecked Sendable {
     }
 
     private func clearConnectionState() {
+        candidateToken = UUID()
+        connectionToken = UUID()
+        writeScheduled = false
+        receivingPaused = false
+        decoder = PrinterNotificationDecoder()
+        readySequence = -1
+        statusOperation?.finish(.failure(GlyphPrintError.connectionFailed("Disconnected during status query.")))
+        statusOperation = nil
+        completionOperation?.finish(.failure(GlyphPrintError.connectionFailed("Disconnected while awaiting printer readiness.")))
+        completionOperation = nil
         pendingChunks.removeAll()
         peripheral = nil
         writeCharacteristic = nil
@@ -252,15 +355,9 @@ private final class GlyphPrinterBLECoordinator: NSObject, @unchecked Sendable {
     private func rejectCurrentCandidateAndResumeScanning(reason: String) {
         logger.debug("Rejecting candidate peripheral: \(reason, privacy: .public)")
 
-        notifyReady = false
-        writeCharacteristic = nil
-        notifyCharacteristic = nil
-
-        if let peripheral = self.peripheral {
-            self.central.cancelPeripheralConnection(peripheral)
-        } else {
-            startScanIfPossible()
-        }
+        if let peripheral { central.cancelPeripheralConnection(peripheral) }
+        clearConnectionState()
+        startScanIfPossible()
     }
 
     private func resumeConnectIfNeeded(with result: Result<Void, Error>) {
@@ -276,15 +373,24 @@ private final class GlyphPrinterBLECoordinator: NSObject, @unchecked Sendable {
     private func flushQueue(peripheral: CBPeripheral, characteristic: CBCharacteristic) {
         logger.debug("Flushing write queue. Pending chunks: \(self.pendingChunks.count, privacy: .public)")
 
-        while peripheral.canSendWriteWithoutResponse, !pendingChunks.isEmpty,
-              sendContinuation?.isFinished == false {
-            let chunk = pendingChunks.removeFirst()
-            peripheral.writeValue(chunk, for: characteristic, type: .withoutResponse)
-            logger.debug("Sent chunk \(chunk.count, privacy: .public) bytes")
-        }
-
-        if pendingChunks.isEmpty {
+        guard !writeScheduled, !receivingPaused else { return }
+        guard !pendingChunks.isEmpty else {
             resumeSendIfNeeded(with: .success(()))
+            return
+        }
+        guard peripheral.canSendWriteWithoutResponse, sendContinuation?.isFinished == false else { return }
+        let chunk = pendingChunks.removeFirst()
+        lastWriteSequence = notificationSequence
+        peripheral.writeValue(chunk, for: characteristic, type: .withoutResponse)
+        let interval = Double(config.writeInterval.components.seconds) + Double(config.writeInterval.components.attoseconds) / 1e18
+        let token = connectionToken
+        writeScheduled = true
+        queue.asyncAfter(deadline: .now() + interval) {
+            guard self.connectionToken == token else { return }
+            self.writeScheduled = false
+            if let peripheral = self.peripheral, let characteristic = self.writeCharacteristic {
+                self.flushQueue(peripheral: peripheral, characteristic: characteristic)
+            }
         }
     }
 
@@ -348,7 +454,7 @@ extension GlyphPrinterBLECoordinator: CBCentralManagerDelegate {
             return
         }
 
-        guard RSSI.intValue >= config.minimumRSSI else {
+        guard config.acceptsRSSI(RSSI.intValue) else {
             logger.debug("Device has too low RSSI: \(RSSI.intValue, privacy: .public); discarding")
             return
         }
@@ -362,12 +468,21 @@ extension GlyphPrinterBLECoordinator: CBCentralManagerDelegate {
             return
         }
 
+        guard !attempted.contains(peripheral.identifier) else { return }
+        attempted.insert(peripheral.identifier)
         logger.debug("Selected candidate \(name, privacy: .public)")
         stopScan()
 
         self.peripheral = peripheral
         peripheral.delegate = self
         central.connect(peripheral, options: nil)
+        let token = UUID()
+        candidateToken = token
+        let seconds = Double(config.candidateTimeout.components.seconds) + Double(config.candidateTimeout.components.attoseconds) / 1e18
+        queue.asyncAfter(deadline: .now() + seconds) {
+            guard self.candidateToken == token, self.connectContinuation != nil else { return }
+            self.rejectCurrentCandidateAndResumeScanning(reason: "candidate timed out")
+        }
     }
 
     private func isDiscoveryCandidate(identifier: UUID, name: String?, serviceUUIDs: [CBUUID]) -> Bool {
@@ -516,7 +631,8 @@ extension GlyphPrinterBLECoordinator: CBPeripheralDelegate {
             return
         }
 
-        guard writeCharacteristic != nil else {
+        guard writeCharacteristic?.properties.contains(.writeWithoutResponse) == true,
+              notifyCharacteristic.properties.contains(.notify) else {
             rejectCurrentCandidateAndResumeScanning(reason: "write characteristic not found")
             return
         }
@@ -549,6 +665,7 @@ extension GlyphPrinterBLECoordinator: CBPeripheralDelegate {
             return
         }
 
+        candidateToken = UUID()
         notifyReady = true
         logger.debug("Notify characteristic is ready; connect flow completed")
         resumeConnectIfNeeded(with: .success(()))
@@ -572,8 +689,26 @@ extension GlyphPrinterBLECoordinator: CBPeripheralDelegate {
             return
         }
 
+        guard self.peripheral === peripheral, characteristic.uuid == CBUUID(string: config.notifyCharacteristicUUID) else { return }
         if let value = characteristic.value {
             logger.debug("Notify: \(value.hexString, privacy: .public)")
+            for message in decoder.append(value) {
+                notificationSequence += 1
+                received.append(message)
+                if received.count > 256 { received.removeFirst() }
+                switch message.kind {
+                case .deviceState:
+                    lastStatus = message
+                    if statusOperation?.finish(.success(())) == true { statusOperation = nil }
+                case .receivingPaused: receivingPaused = true
+                case .receivingReady:
+                    receivingPaused = false
+                    readySequence = notificationSequence
+                    if readySequence > lastWriteSequence, completionOperation?.finish(.success(())) == true { completionOperation = nil }
+                    if let writeCharacteristic { flushQueue(peripheral: peripheral, characteristic: writeCharacteristic) }
+                case .unknown: break
+                }
+            }
         }
     }
 }

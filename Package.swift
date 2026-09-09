@@ -48,8 +48,9 @@ let package = Package(
         ),
         .testTarget(
             name: "GlyphPrintTests",
-            dependencies: ["GlyphPrint"],
-            path: "Tests/GlyphPrintTests"
+            dependencies: ["GlyphPrint", "GlyphPrintCLI"],
+            path: "Tests/GlyphPrintTests",
+            resources: [.copy("Fixtures")]
         )
     ]
 )
