@@ -5,6 +5,8 @@ import OSLog
 public struct MonochromeRasterizer: Sendable {
     public enum Mode: Sendable {
         case threshold(UInt8)
+        /// Floyd–Steinberg error diffusion for photographs and other continuous tones.
+        case floydSteinberg
     }
 
     public let targetWidth: Int
@@ -18,7 +20,7 @@ public struct MonochromeRasterizer: Sendable {
     }
 
     public func rasterize(_ image: CGImage) throws -> RasterImage {
-        guard targetWidth % 8 == 0 else {
+        guard targetWidth > 0, targetWidth % 8 == 0 else {
             throw GlyphPrintError.unsupportedImageWidth(targetWidth)
         }
 
@@ -76,6 +78,8 @@ public struct MonochromeRasterizer: Sendable {
             throw GlyphPrintError.invalidImage
         }
 
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
         context.interpolationQuality = .high
         context.draw(image, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
 
@@ -110,21 +114,35 @@ public struct MonochromeRasterizer: Sendable {
     }
 
     private func makeMonochromeBits(fromRGBA pixels: [UInt8], width: Int, height: Int) -> [UInt8] {
-        let threshold: UInt8
-        switch mode {
-        case .threshold(let value):
-            threshold = value
+        let luminance: [Float] = stride(from: 0, to: pixels.count, by: 4).map { index -> Float in
+            let red = Float(pixels[index]) * 0.299
+            let green = Float(pixels[index + 1]) * 0.587
+            let blue = Float(pixels[index + 2]) * 0.114
+            return red + green + blue
         }
+        switch mode {
+        case .threshold(let threshold):
+            return luminance.map { UInt8($0.rounded()) < threshold ? 1 : 0 }
+        case .floydSteinberg:
+            return Self.dither(luminance, width: width, height: height)
+        }
+    }
 
+    static func dither(_ luminance: [Float], width: Int, height: Int) -> [UInt8] {
+        var values = luminance
         var bits = [UInt8](repeating: 0, count: width * height)
         for y in 0..<height {
             for x in 0..<width {
-                let index = (y * width + x) * 4
-                let r = Float(pixels[index])
-                let g = Float(pixels[index + 1])
-                let b = Float(pixels[index + 2])
-                let luminance = UInt8((0.299 * r + 0.587 * g + 0.114 * b).rounded())
-                bits[y * width + x] = luminance < threshold ? 1 : 0
+                let index = y * width + x
+                let black = values[index] < 128
+                bits[index] = black ? 1 : 0
+                let error = values[index] - (black ? 0 : 255)
+                if x + 1 < width { values[index + 1] += error * 7 / 16 }
+                if y + 1 < height {
+                    if x > 0 { values[index + width - 1] += error * 3 / 16 }
+                    values[index + width] += error * 5 / 16
+                    if x + 1 < width { values[index + width + 1] += error / 16 }
+                }
             }
         }
         return bits

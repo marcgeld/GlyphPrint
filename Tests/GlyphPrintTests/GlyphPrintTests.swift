@@ -17,13 +17,9 @@ import CoreGraphics
     #expect(packet[8] == 0xAA)
 }
 
-@Test func rasterRowPacketIncludesLineNumber() {
-    let packet = GlyphProtocol.makeRasterRowPacket(rowBytes: Data([0xAA, 0x55]), rowIndex: 7)
-    #expect(packet.prefix(6) == Data([0x51, 0x78, 0xA2, 0x00, 0x04, 0x00]))
-    #expect(packet[6] == 0x07)
-    #expect(packet[7] == 0x00)
-    #expect(packet[8] == 0xAA)
-    #expect(packet[9] == 0x55)
+@Test func rasterRowPacketContainsOnlyLSBFirstPixels() {
+    let packet = GlyphProtocol.makeRasterRowPacket(rowBytes: Data([0x80]))
+    #expect(packet == Data(hex: "5178a20001000107ff"))
 }
 
 @Test func packBitsSingleRow() {
@@ -48,7 +44,7 @@ import CoreGraphics
     #expect(packets[0] == GlyphProtocol.preamble1)
     #expect(packets[1] == GlyphProtocol.preamble2)
     #expect(packets[2] == GlyphProtocol.pageStart)
-    #expect(packets[packets.count - 2] == GlyphProtocol.pageEnd)
+    #expect(packets.last == GlyphProtocol.pageEnd)
 }
 
 @Test func printSendsPacketsToTransport() async throws {
@@ -67,7 +63,7 @@ import CoreGraphics
 @Test func buildPrintJobIncludesFeedPaperByDefault() throws {
     let raster = RasterImage(width: 8, height: 1, bytes: Data([0xAA]))
     let packets = try GlyphProtocol.buildPrintJob(from: raster)
-    #expect(packets.last == GlyphProtocol.feedPaper)
+    #expect(packets[packets.count - 2] == GlyphProtocol.feedPaper)
 }
 
 @Test func buildPrintJobOmitsFeedWhenDisabled() throws {
@@ -85,6 +81,28 @@ import CoreGraphics
 
 @Test func makeRasterPacketsThrowsOnTruncatedData() {
     let raster = RasterImage(width: 8, height: 2, bytes: Data([0xAA]))  // needs 2 bytes, only 1
+    #expect(throws: GlyphPrintError.self) {
+        _ = try GlyphProtocol.makeRasterPackets(from: raster)
+    }
+}
+
+@Test func makeRasterPacketsThrowsOnExtraData() {
+    let raster = RasterImage(width: 8, height: 1, bytes: Data([0xAA, 0xBB]))
+    #expect(throws: GlyphPrintError.self) {
+        _ = try GlyphProtocol.makeRasterPackets(from: raster)
+    }
+}
+
+@Test func buildPrintJobThrowsOnUnsupportedImageWidth() {
+    let raster = RasterImage(width: 7, height: 1, bytes: Data([0xAA]))
+    #expect(throws: GlyphPrintError.self) {
+        _ = try GlyphProtocol.buildPrintJob(from: raster)
+    }
+}
+
+@Test func makeRasterPacketsThrowsWhenLineNumberWouldOverflow() {
+    let height = Int(UInt16.max) + 2
+    let raster = RasterImage(width: 8, height: height, bytes: Data(repeating: 0x00, count: height))
     #expect(throws: GlyphPrintError.self) {
         _ = try GlyphProtocol.makeRasterPackets(from: raster)
     }

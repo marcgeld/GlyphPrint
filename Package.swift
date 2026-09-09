@@ -16,7 +16,12 @@ let package = Package(
         .executable(
             name: "gprint",
             targets: ["GlyphPrintCLI"]
-        )
+        ),
+        .executable(
+            name: "qr-example",
+            targets: ["PrintQRCodeExample"]
+        ),
+        .executable(name: "photo-example", targets: ["PrintImageAndTextExample"])
     ],
     targets: [
         .target(
@@ -28,6 +33,18 @@ let package = Package(
             name: "GlyphPrintCLI",
             dependencies: ["GlyphPrint"],
             path: "Sources/GlyphPrintCLI"
+        ),
+        .executableTarget(
+            name: "PrintQRCodeExample",
+            dependencies: ["GlyphPrint"],
+            path: "Examples/PrintQRCode"
+        ),
+        .executableTarget(
+            name: "PrintImageAndTextExample",
+            dependencies: ["GlyphPrint"],
+            path: "Examples/PrintImageAndText",
+            exclude: ["README.md"],
+            resources: [.copy("markus-winkler-Z8yWSsx8OWE-unsplash.jpg")]
         ),
         .testTarget(
             name: "GlyphPrintTests",
